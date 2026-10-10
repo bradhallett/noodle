@@ -14,6 +14,11 @@ public enum DecisionGates {
     /// Injection suspicion on WebMCP tool descriptions, stricter because a
     /// description the bot may be asked to call is a stronger attack surface.
     public static let webMCPInjection: Float = 0.8
+    /// Confidence an element recommendation needs before `inspect --for`
+    /// surfaces it; below this the pick reads as no recommendation. Probed
+    /// 2026-10-10: every pick above this gate was correct (10/10), the one
+    /// wrong pick of twelve came back at 0.39.
+    public static let recommend: Float = 0.8
     /// Characters of untrusted content screened and echoed per question.
     public static let contentCap = 2000
     /// Terminal tail characters the command-status question reads.

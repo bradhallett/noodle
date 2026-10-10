@@ -79,4 +79,34 @@ final class BrowserDecisionJudgeTests: XCTestCase {
             XCTFail("Expected the serving's error to propagate.")
         } catch {}
     }
+
+    func testRecommendMapsTheWinningOptionToItsElementTarget() async throws {
+        let serving = Serving(answers: ["pick": DecisionAnswer(choice: "e02", probabilities: ["e01": 0.02, "e02": 0.97], confidence: 0.97, calibrated: true)])
+        let elements = [
+            ["rank": 1, "tag": "a", "target": "a:nth-of-type(1)", "label": "Continue shopping", "visible": true],
+            ["rank": 2, "tag": "button", "target": "#checkout", "label": "Continue to payment", "visible": true],
+        ]
+        let pick = try await BrowserDecisionJudge(serving: serving).recommend(query: "proceed to payment", elements: elements)
+        let answer = try XCTUnwrap(pick)
+        XCTAssertEqual(answer.target, "#checkout")
+        XCTAssertEqual(answer.confidence, 0.97)
+        let question = try XCTUnwrap(serving.asked.first?["pick"])
+        guard case .choice(let instructions, let criteria) = question else { return XCTFail("pick must be a choice question") }
+        XCTAssertTrue(instructions.contains("proceed to payment"), "the task rides in the instructions")
+        XCTAssertEqual(criteria["e02"], "rank 2 button \"Continue to payment\"", "the description carries rank, tag and label")
+    }
+
+    func testRecommendIgnoresUnknownAndLowConfidenceOptions() async throws {
+        let outOfRange = Serving(answers: ["pick": DecisionAnswer(choice: "e09", confidence: 0.99, calibrated: true)])
+        let nilPick = try await BrowserDecisionJudge(serving: outOfRange).recommend(query: "q", elements: [["rank": 1, "tag": "button", "target": "#a"]])
+        XCTAssertNil(nilPick, "an option outside the candidate list picks nothing")
+
+        let lowConfidence = Serving(answers: ["pick": DecisionAnswer(choice: "e01", probabilities: ["e01": 0.4], confidence: 0.4, calibrated: true)])
+        let judged = try await BrowserDecisionJudge(serving: lowConfidence).recommend(query: "q", elements: [["rank": 1, "tag": "button", "target": "#a"]])
+        XCTAssertEqual(judged?.target, "#a", "the judge reports; the provider's gate decides what surfaces")
+
+        let noAnswer = Serving(answers: [:])
+        let empty = try await BrowserDecisionJudge(serving: noAnswer).recommend(query: "q", elements: [["rank": 1, "tag": "button", "target": "#a"]])
+        XCTAssertNil(empty)
+    }
 }

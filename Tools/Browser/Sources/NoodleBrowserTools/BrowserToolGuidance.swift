@@ -15,7 +15,7 @@ enum BrowserToolGuidance {
         case .forward: "Go forward in the live tab's history."
         case .reload: "Reload the selected tab."
         case .close: "Close the selected tab; profile website data remains."
-        case .inspect: "Read page text, elements and available frames. Optional --frame ID."
+        case .inspect: "Read page text, elements and available frames. Optional --frame ID, and --for QUERY to get a `recommendation` naming the element a decision model picks for that goal, with its confidence. The recommendation advises; verify it fits before acting."
         case .eval: "Run JavaScript from --text BODY or --file PATH; optional --frame ID."
         case .webMCPList: "Discover the current document's WebMCP tools, schemas and opaque IDs; optional --frame ID for a same-origin frame. Returns value.status and value.tools."
         case .webMCPCall: "Invoke --tool ID from discovery with --args JSON_OBJECT or --args-file WORKSPACE_FILE (default {}); optional --frame ID. Runs in the tab's current authenticated session without opening a window."

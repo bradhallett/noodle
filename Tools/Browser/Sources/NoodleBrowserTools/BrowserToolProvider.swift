@@ -56,6 +56,7 @@ public struct BrowserToolProvider: ToolProvider {
             "y": ["type": "number", "description": "Main-viewport y in points."], "count": ["type": "integer", "description": "1 or 2 clicks."],
             "download": string("Download ID from downloads."), "accept": ["type": "boolean", "description": "Accept or dismiss the dialog."],
             "bookmark": string("Bookmark ID from bookmarks."), "title": string("Bookmark title."), "query": string("Search in titles and URLs."),
+            "for": string("What the task wants to act on; a decision model then recommends the matching element."),
             "limit": ["type": "integer", "description": "1–200 results."], "offset": ["type": "integer", "description": "Results to skip."],
             "tool": string("WebMCP tool ID from webmcp-list."), "args": ["type": "object", "description": "WebMCP tool arguments."],
             // Noodle verifies membership and does the posting; this extension only supplies the card.
@@ -65,6 +66,9 @@ public struct BrowserToolProvider: ToolProvider {
             "args-file": file("read", "UTF-8 JSON arguments in your workspace, instead of --args."),
             "source": file("read", "Workspace file to upload."), "output": file("write", "New workspace file to create.")]
         for name in operation.options { properties[name] = options[name] }
+        // `--for` is Noodle's own: the pick is decided here, over the elements the
+        // app already returned, so the shared protocol and the external CLI never see it.
+        if operation == .inspect { properties["for"] = options["for"] }
         if operation.isFileTransfer { required.append(operation == .upload ? "source" : "output") }
         if operation == .present { required.append("conversation") }
         var tool: [String: Any] = [
@@ -131,6 +135,15 @@ public struct BrowserToolProvider: ToolProvider {
             }
             await Self.judge(operation, object: &object, signals: response.signals, serving: judge)
             if operation == .inspect { Self.trimRankedElements(&object) }
+            // A --for pick rides on the trimmed head, so the winner survives the cut.
+            if operation == .inspect, let query = (options["for"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty,
+                let judge, var value = object["value"] as? [String: Any],
+                let elements = value["elements"] as? [[String: Any]],
+                let pick = await judge.recommend(query: query, elements: elements),
+                pick.confidence >= DecisionGates.recommend {
+                value["recommendation"] = ["target": pick.target, "confidence": pick.confidence]
+                object["value"] = value
+            }
             let text = String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
             return try JSONSerialization.data(withJSONObject: ["content": [["type": "text", "text": text]], "structuredContent": object, "isError": failed], options: [.sortedKeys])
         } catch {

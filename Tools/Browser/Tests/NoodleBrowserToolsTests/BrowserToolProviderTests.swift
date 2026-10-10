@@ -167,6 +167,51 @@ final class BrowserToolProviderTests: XCTestCase {
         XCTAssertEqual(value["result"] as? String, poison, "structured results are flagged, not rewritten")
     }
 
+    func testInspectForAttachesAHighConfidenceRecommendation() async throws {
+        transport.respond = { _, _ in
+            var response = BrowserResponse()
+            response.text = ##"{"url":"https://shop.example/","title":"Shop","readyState":"complete","elements":[{"rank":1,"tag":"a","target":"a:nth-of-type(1)","label":"Continue shopping","visible":true},{"rank":2,"tag":"button","target":"#checkout","label":"Continue to payment","visible":true}]}"##
+            return response
+        }
+        let stub = transport!
+        var asked: [String] = []
+        let advising = BrowserToolProvider(stagingRoot: { [root] in root }, transport: { request in
+            stub.requests.append(request)
+            return try stub.respond(request, nil)
+        }, judge: BrowserJudgeServing(recommend: { query, _ in
+            asked.append(query)
+            return (target: "#checkout", confidence: 0.97)
+        }))
+        let registry = ToolProviderRegistry(); try registry.register(advising)
+        let request = ToolBridgeRequest(session: "s", action: .call, provider: advising.manifest.id, tool: "inspect",
+                                        arguments: try JSONSerialization.data(withJSONObject: ["browser": mine.uuidString, "tab": tab.uuidString, "for": "proceed to payment"]))
+        let data = try await ToolBroker.perform(request, registry: registry, assignments: { [mine] in ["browser": [mine.uuidString]] },
+                                                context: ToolCallContext(agentID: UUID(), workspace: workspace), host: .none)
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let value = try XCTUnwrap((result["structuredContent"] as? [String: Any])?["value"] as? [String: Any])
+        XCTAssertEqual(asked, ["proceed to payment"], "the query reaches the judge once")
+        let recommendation = try XCTUnwrap(value["recommendation"] as? [String: Any])
+        XCTAssertEqual(recommendation["target"] as? String, "#checkout")
+        XCTAssertEqual(recommendation["confidence"] as? Double ?? 0, 0.97, accuracy: 0.001)
+
+        // Below the gate the pick reads as no recommendation at all.
+        transport.respond = { _, _ in
+            var response = BrowserResponse()
+            response.text = ##"{"url":"https://shop.example/","elements":[{"rank":1,"tag":"button","target":"#a","label":"A","visible":true}]}"##
+            return response
+        }
+        let unsure = BrowserToolProvider(stagingRoot: { [root] in root }, transport: { request in try stub.respond(request, nil) },
+            judge: BrowserJudgeServing(recommend: { _, _ in (target: "#a", confidence: 0.4) }))
+        let lowRegistry = ToolProviderRegistry(); try lowRegistry.register(unsure)
+        let lowConfidence = ToolBridgeRequest(session: "s", action: .call, provider: unsure.manifest.id, tool: "inspect",
+                                              arguments: try JSONSerialization.data(withJSONObject: ["browser": mine.uuidString, "tab": tab.uuidString, "for": "anything"]))
+        let data2 = try await ToolBroker.perform(lowConfidence, registry: lowRegistry, assignments: { [mine] in ["browser": [mine.uuidString]] },
+                                                 context: ToolCallContext(agentID: UUID(), workspace: workspace), host: .none)
+        let result2 = try XCTUnwrap(JSONSerialization.jsonObject(with: data2) as? [String: Any])
+        let value2 = try XCTUnwrap((result2["structuredContent"] as? [String: Any])?["value"] as? [String: Any])
+        XCTAssertNil(value2["recommendation"], "a pick under the gate surfaces nothing")
+    }
+
     func testEveryOperationIsAToolBoundToAnAssignedBrowser() async throws {
         XCTAssertNoThrow(try provider.manifest.validate())
         XCTAssertEqual(provider.manifest.activation, .whenAssigned("browser"))

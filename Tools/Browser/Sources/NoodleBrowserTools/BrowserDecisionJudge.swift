@@ -89,6 +89,43 @@ public struct BrowserDecisionJudge: Sendable {
         return answers["injection"]?.noul
     }
 
+    /// Picks the element a task acts on from `inspect`'s ranked candidates.
+    /// Returns the winner's target selector and the model's confidence; the
+    /// caller gates, so a low-confidence pick reads as no recommendation.
+    public func recommend(query: String, elements: [[String: Any]]) async throws -> (target: String, confidence: Float)? {
+        let ranked = Array(elements.prefix(16))
+        guard !ranked.isEmpty, !query.isEmpty else { return nil }
+        let criteria = Dictionary(uniqueKeysWithValues: ranked.enumerated().map { index, element in
+            ("e\(String(format: "%02d", index + 1))", Self.pickDescription(element))
+        })
+        let questions: [String: DecisionQuestion] = [
+            "pick": .choice(instructions: """
+                A bot must act on exactly one element of a web page to: \(query).
+                Each option describes one candidate element. Pick the element the task acts on.
+                An enabled, visible element whose meaning matches the task beats a near-match with a vaguer label; a disabled or decorative lookalike is never the target.
+                """, criteria: criteria)]
+        let answers = try await serving.decide(state: ["task": query], questions: questions)
+        guard let id = answers["pick"]?.choice, let number = Int(id.dropFirst()),
+            1...ranked.count ~= number,
+            let target = ranked[number - 1]["target"] as? String else { return nil }
+        guard let confidence = answers["pick"]?.confidence ?? answers["pick"]?.probabilities?[id] else { return nil }
+        return (target, confidence)
+    }
+
+    /// One candidate's probe-validated description: the fields a picking
+    /// decision needs, in the order the probe phrased them.
+    private static func pickDescription(_ element: [String: Any]) -> String {
+        var parts = ["rank \(element["rank"] ?? "?")", "\(element["tag"] ?? "element")"]
+        if let type = element["type"] as? String { parts.append("type=\(type)") }
+        if let label = element["label"] as? String, !label.isEmpty { parts.append("\"\(label)\"") }
+        if let href = element["href"] as? String { parts.append("href=\(String(href.prefix(60)))") }
+        if let value = element["value"] as? String, !value.isEmpty { parts.append("value=\"\(value)\"") }
+        if element["disabled"] as? Bool == true { parts.append("· disabled") }
+        if element["visible"] as? Bool == false { parts.append("· hidden") }
+        if let rect = element["rect"] as? [String: Any], let y = rect["y"] as? Double { parts.append("· at y=\(Int(y))") }
+        return parts.joined(separator: " ")
+    }
+
     private static let blockerDescriptions: [String: String] = [
         "none": "The overlay is dismissible decoration; the page is usable.",
         "cookie": "A cookie or consent notice asking for acceptance.",
@@ -119,11 +156,13 @@ public struct BrowserJudgeServing: Sendable {
     private let settleCall: @Sendable (BrowserSettleSignals) async -> BrowserActionJudgement?
     private let handoffCall: @Sendable (_ title: String, _ url: String, _ message: String?) async -> BrowserHandoffCheck?
     private let screenCall: @Sendable (_ text: String, _ source: String) async -> Float?
+    private let recommendCall: @Sendable (_ query: String, _ elements: [[String: Any]]) async -> (target: String, confidence: Float)?
 
     public init(settle: @escaping @Sendable (BrowserSettleSignals) async -> BrowserActionJudgement? = { _ in nil },
                 handoff: @escaping @Sendable (_ title: String, _ url: String, _ message: String?) async -> BrowserHandoffCheck? = { _, _, _ in nil },
-                screen: @escaping @Sendable (_ text: String, _ source: String) async -> Float? = { _, _ in nil }) {
-        self.settleCall = settle; self.handoffCall = handoff; self.screenCall = screen
+                screen: @escaping @Sendable (_ text: String, _ source: String) async -> Float? = { _, _ in nil },
+                recommend: @escaping @Sendable (_ query: String, _ elements: [[String: Any]]) async -> (target: String, confidence: Float)? = { _, _ in nil }) {
+        self.settleCall = settle; self.handoffCall = handoff; self.screenCall = screen; self.recommendCall = recommend
     }
 
     public func settle(_ signals: BrowserSettleSignals) async -> BrowserActionJudgement? {
@@ -137,8 +176,11 @@ public struct BrowserJudgeServing: Sendable {
     public func screen(_ text: String, source: String) async -> Float? {
         await screenCall(text, source)
     }
-}
 
+    public func recommend(query: String, elements: [[String: Any]]) async -> (target: String, confidence: Float)? {
+        await recommendCall(query, elements)
+    }
+}
 /// The browser questions asked through the shared serving cache, so settings
 /// changes and failures re-resolve without a restart.
 extension DecisionModelServingCache {
@@ -146,6 +188,7 @@ extension DecisionModelServingCache {
         BrowserJudgeServing(
             settle: { signals in await self.call { try await BrowserDecisionJudge(serving: $0).judge(signals) } },
             handoff: { title, url, message in await self.call { try await BrowserDecisionJudge(serving: $0).verifyHandoff(title: title, url: url, message: message) } },
-            screen: { text, source in await self.call { try await BrowserDecisionJudge(serving: $0).screen(text, source: source) } })
+            screen: { text, source in await self.call { try await BrowserDecisionJudge(serving: $0).screen(text, source: source) } },
+            recommend: { query, elements in await self.call { try await BrowserDecisionJudge(serving: $0).recommend(query: query, elements: elements) } })
     }
 }
